@@ -68,9 +68,22 @@ sudo apt update
 ```
 `signed-by` limits each key to its own repository, so these keys cannot sign packages that claim to come from Debian.
 
+### Take quickshell from Debian
+The DankLinux repository still carries its own, deprecated `quickshell` build. Its version number is higher than Debian's, so apt picks it over Debian's package unless told otherwise. Block it with a pin:
+```bash
+sudo tee /etc/apt/preferences.d/quickshell-from-debian >/dev/null <<'EOF'
+Package: quickshell quickshell-git
+Pin: origin download.opensuse.org
+Pin-Priority: -1
+EOF
+sudo apt update
+apt policy quickshell
+```
+`Pin-Priority: -1` means "never install from this source". The pin matches the host written in the sources file, so it also covers the mirrors openSUSE redirects to. `apt policy` should now show a Candidate from `deb.debian.org`.
+
 ### Packages
 ```bash
-sudo apt install quickshell            # from Debian itself, not from DankLinux
+sudo apt install quickshell
 sudo apt install niri dms kitty \
   xdg-desktop-portal-gnome xdg-desktop-portal-gtk
 ```
@@ -332,6 +345,7 @@ The **Bar** pages (General, Appearance, Bar widgets) control position, look, wid
 
 | Problem | Check |
 |---|---|
+| `File has unexpected size ... Mirror sync in progress?` | An openSUSE mirror is behind the main server. Wait 15 to 30 minutes, then `sudo apt update` and retry. If it is `quickshell`, the pin in section 2 is missing. |
 | DMS bar shows up in GNOME too | It was enabled globally. `systemctl --user disable dms`, then `systemctl --user add-wants niri.service dms` again. |
 | No bar in niri | `systemctl --user status dms` and `journalctl --user -u dms -b`. Run `dms doctor`. |
 | Black screen or instant return to GDM | Log in to GNOME and run `journalctl --user -b -u niri`. Usually a config error; run `niri validate`. |
@@ -352,6 +366,7 @@ systemctl --user remove-wants niri.service dms 2>/dev/null
 sudo apt purge dms niri quickshell matugen dgop danksearch
 sudo rm /etc/apt/sources.list.d/danklinux.list /etc/apt/sources.list.d/avengemedia-dms.list
 sudo rm /etc/apt/keyrings/danklinux.gpg /etc/apt/keyrings/avengemedia-dms.gpg
+sudo rm /etc/apt/preferences.d/quickshell-from-debian
 sudo apt update
 rm -r ~/.config/niri ~/.config/DankMaterialShell
 rm ~/.local/share/applications/niri-mimeapps.list
