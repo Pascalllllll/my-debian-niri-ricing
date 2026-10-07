@@ -22,6 +22,8 @@ Both come as `.deb` packages from the DankLinux repositories, so nothing has to 
 11. [Removing niri and DMS](#11-removing-niri-and-dms)
 12. [How long this stays accurate](#12-how-long-this-stays-accurate)
 
+All commands in this guide work in both fish and bash. They avoid bash-only syntax such as `<<'EOF'` heredocs, which fish does not support.
+
 ---
 
 ## 1. How the two sessions share one system
@@ -71,11 +73,8 @@ sudo apt update
 ### Take quickshell from Debian
 The DankLinux repository still carries its own, deprecated `quickshell` build. Its version number is higher than Debian's, so apt picks it over Debian's package unless told otherwise. Block it with a pin:
 ```bash
-sudo tee /etc/apt/preferences.d/quickshell-from-debian >/dev/null <<'EOF'
-Package: quickshell quickshell-git
-Pin: origin download.opensuse.org
-Pin-Priority: -1
-EOF
+printf '%s\n' 'Package: quickshell quickshell-git' 'Pin: origin download.opensuse.org' 'Pin-Priority: -1' | \
+  sudo tee /etc/apt/preferences.d/quickshell-from-debian
 sudo apt update
 apt policy quickshell
 ```
@@ -107,11 +106,13 @@ It should be 26.04 or newer. Window and layer blur (`background-effect`) does no
 
 The `dms` package installs a systemd user service whose `[Install]` section says `WantedBy=graphical-session.target`. GNOME also reaches that target. If you run the usual `systemctl --user enable dms`, DMS starts inside GNOME too: a second bar appears, and DMS takes the notification service name GNOME Shell needs.
 
-Tie it to niri instead:
+On Debian the package goes further: its install script enables the service for every user at once, through a link in `/etc/systemd/user/graphical-session.target.wants/`. Remove that global link, then tie DMS to niri:
 ```bash
+sudo systemctl --global disable dms
 systemctl --user add-wants niri.service dms
+find ~/.config/systemd/user /etc/systemd/user -name dms.service
 ```
-This starts DMS whenever niri starts, and never in GNOME. Do not also add `spawn-at-startup "dms" "run"` to the niri config; DMS would run twice.
+The last command should list exactly one link, the one in `niri.service.wants`. This starts DMS whenever niri starts, and never in GNOME. A `dms` package upgrade may recreate the global link; repeat the check after upgrading. Do not also add `spawn-at-startup "dms" "run"` to the niri config; DMS would run twice.
 
 For the same reason, put environment variables in the niri config (section 6), not in `~/.config/environment.d/`. Files there apply to every session, GNOME included.
 
@@ -125,20 +126,11 @@ This laptop has two GPUs: the Intel iGPU drives the built-in screen, and the RTX
 The NVIDIA driver keeps freed video memory instead of returning it, which makes niri use close to 1 GiB of VRAM instead of about 100 MiB. This matters whenever the NVIDIA GPU is involved, for example with an external monitor on a port wired to it. niri's documentation gives this per-process driver profile:
 ```bash
 sudo mkdir -p /etc/nvidia/nvidia-application-profiles-rc.d
-sudo tee /etc/nvidia/nvidia-application-profiles-rc.d/50-limit-free-buffer-pool-in-wayland-compositors.json >/dev/null <<'EOF'
-{
-    "rules": [
-        { "pattern": { "feature": "procname", "matches": "niri" },
-          "profile": "Limit Free Buffer Pool On Wayland Compositors" }
-    ],
-    "profiles": [
-        { "name": "Limit Free Buffer Pool On Wayland Compositors",
-          "settings": [ { "key": "GLVidHeapReuseRatio", "value": 0 } ] }
-    ]
-}
-EOF
+echo '{"rules":[{"pattern":{"feature":"procname","matches":"niri"},"profile":"Limit Free Buffer Pool On Wayland Compositors"}],"profiles":[{"name":"Limit Free Buffer Pool On Wayland Compositors","settings":[{"key":"GLVidHeapReuseRatio","value":0}]}]}' | \
+  sudo tee /etc/nvidia/nvidia-application-profiles-rc.d/50-limit-free-buffer-pool-in-wayland-compositors.json
+python3 -m json.tool /etc/nvidia/nvidia-application-profiles-rc.d/50-limit-free-buffer-pool-in-wayland-compositors.json
 ```
-The kernel line from the main README already has `nvidia-drm.modeset=1`, which niri also needs.
+The last command prints the JSON back if it is valid. The kernel line from the main README already has `nvidia-drm.modeset=1`, which niri also needs.
 
 ### Running games on the NVIDIA GPU
 Same as in GNOME. For one command:
@@ -208,6 +200,38 @@ DMS reads wallpapers from a folder you choose in Settings. Use the same folder a
 ```bash
 mkdir -p ~/Pictures/Wallpapers
 ```
+
+### Optional: Alt as the Mod key
+On a 65% keyboard the Super key can sit somewhere awkward, for example right of the space bar. niri can use Alt as `Mod` instead. Every binding written as `Mod+...` then moves to Alt.
+
+The cost: niri takes those Alt combinations before apps see them. Alt+Left / Alt+Right (back and forward in browsers), Alt+1 to Alt+9 (browser tabs), Alt+F (menus), and Alt+Up / Alt+Down (move line in VS Code) stop working inside apps. If your keyboard supports VIA or QMK, remapping a key in the keyboard firmware avoids this; the steps below are the software route.
+
+**1. Switch the Mod key.** Add it to the existing `input` block in `config.kdl`:
+```bash
+sed -i '0,/^input {/s//input {\n    mod-key "Alt"\n    mod-key-nested "Super"/' ~/.config/niri/config.kdl
+grep -A3 '^input {' ~/.config/niri/config.kdl
+```
+
+**2. Fix the bindings that now collide.** With Mod = Alt, some DMS defaults turn into the same key twice, which makes the config invalid:
+
+| Default | Becomes | Change to | Reason |
+|---|---|---|---|
+| `Mod+Tab` (overview) | Alt+Tab | remove | Alt+Tab stays the window switcher from `recent-windows`; Mod+O still opens the overview |
+| `Alt+Space` (spotlight bar) | same as Mod+Space | `Mod+Shift+Space` | Mod+Space keeps the launcher |
+| `Mod+Alt+L` (lock) | Alt+L, same as focus right | `Super+L` | Same key as Windows; locking is rare, so the far Super key is fine |
+| `Mod+Alt+W` (tabbed column) | Alt+W, same as wallpapers | `Mod+Ctrl+W` | Free combination |
+| `Super+X` (power menu) | unchanged | `Mod+X` | Keeps it on the near key |
+
+```bash
+sed -i '/^\s*Mod+Tab repeat=false { toggle-overview; }/d' ~/.config/niri/dms/binds.kdl
+sed -i 's/^\(\s*\)Alt+Space hotkey-overlay-title="Spotlight Bar"/\1Mod+Shift+Space hotkey-overlay-title="Spotlight Bar"/' ~/.config/niri/dms/binds.kdl
+sed -i 's/^\(\s*\)Mod+Alt+L hotkey-overlay-title="Lock Screen"/\1Super+L hotkey-overlay-title="Lock Screen"/' ~/.config/niri/dms/binds.kdl
+sed -i 's/^\(\s*\)Mod+Alt+W {/\1Mod+Ctrl+W {/' ~/.config/niri/dms/binds.kdl
+sed -i 's/^\(\s*\)Super+X hotkey-overlay-title="Power Menu/\1Mod+X hotkey-overlay-title="Power Menu/' ~/.config/niri/dms/binds.kdl
+grep -nE '^\s*(Mod\+Alt|Alt\+Space|Super\+X|Mod\+Tab )' ~/.config/niri/dms/binds.kdl
+niri validate
+```
+The `grep` line should print nothing. If `niri validate` reports a duplicate key, the message names it; change one of the two the same way.
 
 ### Check the config
 ```bash
@@ -310,13 +334,13 @@ The **Bar** pages (General, Appearance, Bar widgets) control position, look, wid
 
 ## 9. Key bindings
 
-`Mod` is the Super (Windows) key. **Mod+Shift+/** shows the full list on screen, read from your actual config.
+`Mod` is the Super (Windows) key, or Alt if you followed *Alt as the Mod key* in section 6; the table shows that variant where keys differ. **Mod+Shift+/** shows the full list on screen, read from your actual config.
 
 | Keys | Action |
 |---|---|
 | Mod+T | Terminal (kitty) |
 | Mod+Space | App launcher |
-| Alt+Space | Spotlight bar (search apps, files, calculator) |
+| Mod+Shift+Space (Alt+Space with Super as Mod) | Spotlight bar (search apps, files, calculator) |
 | Mod+Q | Close window |
 | Mod+H / Mod+L (or Left / Right) | Focus column left / right |
 | Mod+J / Mod+K (or Down / Up) | Focus window down / up in a column |
@@ -324,8 +348,8 @@ The **Bar** pages (General, Appearance, Bar widgets) control position, look, wid
 | Mod+F | Maximize column |
 | Mod+Shift+F | Fullscreen |
 | Mod+Shift+T | Toggle floating |
-| Mod+Alt+W | Tabbed column (moved from Mod+W in section 6) |
-| Mod+O or Mod+Tab | Overview of all workspaces |
+| Mod+Ctrl+W (Mod+Alt+W with Super as Mod) | Tabbed column (moved from Mod+W in section 6) |
+| Mod+O (also Mod+Tab with Super as Mod) | Overview of all workspaces |
 | Mod+1 to Mod+9 | Switch workspace |
 | Mod+U / Mod+I | Workspace down / up |
 | **Mod+W** | **Wallpaper browser** (moved from Mod+Y in section 6) |
@@ -335,9 +359,10 @@ The **Bar** pages (General, Appearance, Bar widgets) control position, look, wid
 | Mod+M or Ctrl+Alt+Delete | Task manager |
 | Mod+Comma | DMS Settings |
 | Mod+Shift+W | Create a window rule for the focused window |
-| Super+X | Power menu |
-| Mod+Alt+L | Lock screen |
+| Mod+X (Super+X with Super as Mod) | Power menu |
+| Super+L (Mod+Alt+L with Super as Mod) | Lock screen |
 | Mod+Shift+E | Quit niri (back to GDM) |
+| Alt+Tab | Switch between recent windows |
 
 ---
 
@@ -346,7 +371,7 @@ The **Bar** pages (General, Appearance, Bar widgets) control position, look, wid
 | Problem | Check |
 |---|---|
 | `File has unexpected size ... Mirror sync in progress?` | An openSUSE mirror is behind the main server. Wait 15 to 30 minutes, then `sudo apt update` and retry. If it is `quickshell`, the pin in section 2 is missing. |
-| DMS bar shows up in GNOME too | It was enabled globally. `systemctl --user disable dms`, then `systemctl --user add-wants niri.service dms` again. |
+| DMS bar shows up in GNOME too | It was enabled globally, usually by the package. `sudo systemctl --global disable dms` (and `systemctl --user disable dms` if you enabled it yourself), then `systemctl --user add-wants niri.service dms` again. |
 | No bar in niri | `systemctl --user status dms` and `journalctl --user -u dms -b`. Run `dms doctor`. |
 | Black screen or instant return to GDM | Log in to GNOME and run `journalctl --user -b -u niri`. Usually a config error; run `niri validate`. |
 | "Duplicate bind" error | The same key is defined in `config.kdl` and `dms/binds.kdl`. Keep one. |
