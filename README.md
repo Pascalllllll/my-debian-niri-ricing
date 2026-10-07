@@ -1,146 +1,115 @@
-# Debian + Niri + Noctalia (next to GNOME)
+# Debian + niri + DankMaterialShell (next to GNOME)
 
-A second desktop session on the same Debian install: **niri**, a scrollable-tiling Wayland compositor, with the **Noctalia** shell for the bar, launcher, notifications, and wallpaper picker. GNOME and its macOS look stay installed. At the login screen you pick which one to start.
+A second desktop session on the same Debian install, built for ricing: **niri**, a scrollable-tiling Wayland compositor, with **DankMaterialShell (DMS)** for the bar, launcher, notifications, lock screen, wallpaper picker, and wallpaper-based colour theming. GNOME stays installed as a fallback. At the login screen you pick which one to start.
 
-The niri and Noctalia configs come from [pankajsagvekar/dotfiles](https://github.com/pankajsagvekar/dotfiles). That repo only contains config files, so this guide adds the install steps and the changes needed for this laptop (Debian testing, NVIDIA, 2560x1600 screen).
+Both come as `.deb` packages from the DankLinux repositories, so nothing has to be compiled and `apt upgrade` keeps them current.
 
-**Target:** Debian 14 "forky" (testing), GNOME 50 already installed, niri 26.04, Noctalia v5.
+**Target:** Debian 14 "forky" (testing), GNOME 50 already installed, Intel Arrow Lake iGPU + NVIDIA RTX 5060 Mobile (hybrid).
 
 ---
 
 ## Contents
 1. [How the two sessions share one system](#1-how-the-two-sessions-share-one-system)
-2. [Install niri](#2-install-niri)
-3. [Install Noctalia](#3-install-noctalia)
-4. [Companion apps](#4-companion-apps)
-5. [NVIDIA fix](#5-nvidia-fix)
-6. [Apply the dotfiles](#6-apply-the-dotfiles)
-7. [Changes to make before first login](#7-changes-to-make-before-first-login)
-8. [First login](#8-first-login)
+2. [Install niri and DMS](#2-install-niri-and-dms)
+3. [Start DMS only in niri](#3-start-dms-only-in-niri)
+4. [NVIDIA and hybrid graphics](#4-nvidia-and-hybrid-graphics)
+5. [Generate the config](#5-generate-the-config)
+6. [Edit before first login](#6-edit-before-first-login)
+7. [First login](#7-first-login)
+8. [Ricing with DMS](#8-ricing-with-dms)
 9. [Key bindings](#9-key-bindings)
 10. [Troubleshooting](#10-troubleshooting)
-11. [Removing niri](#11-removing-niri)
+11. [Removing niri and DMS](#11-removing-niri-and-dms)
 12. [How long this stays accurate](#12-how-long-this-stays-accurate)
 
 ---
 
 ## 1. How the two sessions share one system
 
-Both GNOME and niri are Wayland sessions. GDM lists every file in `/usr/share/wayland-sessions/`, so once niri is installed it shows up next to GNOME.
+GNOME and niri are both Wayland sessions. GDM lists every session file in `/usr/share/wayland-sessions/`, so once niri is installed it appears next to GNOME.
 
 | Shared between both sessions | Separate per session |
 |---|---|
 | Home folder, apps, Flatpaks | Window management and shortcuts |
-| `~/.config/gtk-3.0`, `~/.config/gtk-4.0` (app themes) | Top bar: GNOME Shell vs Noctalia |
+| `~/.config/gtk-3.0`, `~/.config/gtk-4.0` (app themes) | Bar and panels: GNOME Shell vs DMS |
 | dconf / `gsettings` values | GNOME extensions (do not run in niri) |
-| fish, Starship, fastfetch, fonts | Wallpaper (GNOME setting vs Noctalia) |
-| GDM login screen and keyring | Quick Settings vs Noctalia control center |
+| fish, Starship, fastfetch, fonts | Wallpaper (GNOME setting vs DMS) |
+| GDM login screen and keyring | Notifications, lock screen, idle |
 
-The shared rows are the risk. Anything Noctalia writes into `~/.config/gtk-4.0` also changes how apps look in GNOME. Section 7 turns that off.
+Two rules keep GNOME working:
+- **DMS must not start inside GNOME.** Section 3 ties it to the niri session.
+- **Decide whether DMS may theme GTK apps.** Its GTK colours land in the shared folders above and also change apps in GNOME. Section 8 covers the choice.
 
-**Keep GDM.** Some niri guides install `greetd` and the Noctalia greeter. Two display managers fight over the login screen, and GDM already starts niri fine.
-
----
-
-## 2. Install niri
-
-First check whether Debian has packaged it by now. If it has, use the package and skip to section 3:
-```bash
-apt policy niri xwayland-satellite
-```
-If both show `(none)`, build them.
-
-### Build dependencies
-```bash
-sudo apt install -y build-essential clang pkg-config git curl \
-  libudev-dev libgbm-dev libxkbcommon-dev libegl1-mesa-dev libwayland-dev \
-  libinput-dev libdbus-1-dev libsystemd-dev libseat-dev libpipewire-0.3-dev \
-  libpango1.0-dev libdisplay-info-dev libxcb-cursor-dev xwayland
-```
-
-### Rust
-niri 26.04 needs Rust 1.87 or newer. Check what Debian ships:
-```bash
-rustc --version 2>/dev/null || echo "not installed"
-```
-If it is missing or older, install the current toolchain with rustup. It lives in `~/.cargo` and does not touch Debian's packages:
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-fish_add_path ~/.cargo/bin
-```
-
-### niri as a .deb
-niri's `Cargo.toml` already describes a Debian package (binary, `niri-session`, the GDM session file, portal config, and systemd units). `cargo-deb` builds it, so niri installs and uninstalls through apt like any other package.
-```bash
-cargo install cargo-deb
-mkdir -p ~/src && cd ~/src
-git clone --depth=1 --branch v26.04 https://github.com/niri-wm/niri.git
-cd niri
-cargo deb
-sudo apt install ./target/debian/niri_*.deb
-```
-- `--branch v26.04` builds the release, not the development branch. The dotfiles use blur (`background-effect`), which needs 26.04 or newer.
-- The package pulls in `alacritty` and `fuzzel` as dependencies. They are small, and handy as a fallback terminal and launcher if Noctalia fails to start.
-- The build takes 5 to 15 minutes.
-
-### xwayland-satellite (X11 apps)
-niri runs X11 apps (Steam, some games, older tools) through xwayland-satellite. niri starts it on demand when it finds it in `PATH`.
-```bash
-cd ~/src
-git clone --depth=1 --branch v0.8.3 https://github.com/Supreeeme/xwayland-satellite.git
-cd xwayland-satellite
-cargo build --release
-sudo install -Dm755 target/release/xwayland-satellite /usr/local/bin/xwayland-satellite
-```
+**Keep GDM.** DMS offers its own login screen (`dms-greeter`, based on greetd). Two display managers fight over the login screen, and GDM already starts niri.
 
 ---
 
-## 3. Install Noctalia
+## 2. Install niri and DMS
 
-Noctalia v5 is distributed through its own APT repository.
+### Repositories
+DMS lives in two repositories on openSUSE's build service: `danklinux` (niri, matugen, dgop, and other companions) and `dms` (the shell). Both have a `Debian_Testing` build.
+
 ```bash
-cd /tmp
-wget https://pkg.noctalia.dev/deb/nickh-archive-keyring.deb
-sudo apt install ./nickh-archive-keyring.deb
-sudo wget -O /etc/apt/sources.list.d/noctalia.sources https://pkg.noctalia.dev/deb/noctalia-trixie.sources
+sudo install -d -m 0755 /etc/apt/keyrings
+
+# niri and companions
+curl -fsSL https://download.opensuse.org/repositories/home:AvengeMedia:danklinux/Debian_Testing/Release.key | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/danklinux.gpg
+echo "deb [signed-by=/etc/apt/keyrings/danklinux.gpg] https://download.opensuse.org/repositories/home:/AvengeMedia:/danklinux/Debian_Testing/ /" | \
+  sudo tee /etc/apt/sources.list.d/danklinux.list
+
+# DMS
+curl -fsSL https://download.opensuse.org/repositories/home:/AvengeMedia:/dms/Debian_Testing/Release.key | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/avengemedia-dms.gpg
+echo "deb [signed-by=/etc/apt/keyrings/avengemedia-dms.gpg] https://download.opensuse.org/repositories/home:/AvengeMedia:/dms/Debian_Testing/ /" | \
+  sudo tee /etc/apt/sources.list.d/avengemedia-dms.list
+
 sudo apt update
-sudo apt install noctalia
 ```
-This repository is published for Debian 13 (trixie). It usually works on testing because testing has newer libraries than trixie. Check [docs.noctalia.dev](https://docs.noctalia.dev) for a `forky` or `sid` sources file and use that instead if one exists.
+`signed-by` limits each key to its own repository, so these keys cannot sign packages that claim to come from Debian.
 
----
-
-## 4. Companion apps
-
-The dotfiles call these programs by name. Install them, or change the key bindings in section 7 to apps you already use.
+### Packages
 ```bash
-sudo apt install -y foot thunar firefox-esr \
-  xdg-desktop-portal-gnome xdg-desktop-portal-gtk \
-  wl-clipboard brightnessctl qt6ct
+sudo apt install quickshell            # from Debian itself, not from DankLinux
+sudo apt install niri dms kitty \
+  xdg-desktop-portal-gnome xdg-desktop-portal-gtk
 ```
 | Package | Why |
 |---|---|
-| `foot` | Terminal on Mod+Return; light and Wayland-native |
-| `thunar` | File manager on Mod+M |
-| `firefox-esr` | Browser on Mod+B |
-| `xdg-desktop-portal-gnome`, `-gtk` | Screen sharing, file pickers, and screenshots for apps; niri's portal config asks for these |
-| `wl-clipboard` | Clipboard on the command line (`wl-copy`, `wl-paste`) |
-| `brightnessctl` | Backlight control fallback |
-| `qt6ct` | The config sets `QT_QPA_PLATFORMTHEME=qt6ct` for Qt app styling |
+| `quickshell` | The framework DMS is built on. Debian testing ships it; DankLinux's own build for Debian is deprecated. |
+| `niri` | The compositor. Pulls in `xwayland-satellite` for X11 apps (Steam, some games). |
+| `dms` | The shell and the `dms` command. Pulls in `matugen` (colour generation), `dgop` (system stats), `danksearch` (file search in the launcher), `cava` (audio visualiser), and `qt6ct`. |
+| `kitty` | Terminal. DMS ships a kitty config that follows the wallpaper colours. |
+| `xdg-desktop-portal-gnome`, `-gtk` | Screen sharing, file pickers, and screenshots for apps; niri's portal config asks for these. |
 
-Noctalia has its own polkit agent (password prompts) and notification daemon, so neither needs a separate package.
-
-Set the Nerd Font in foot, so Starship's icons render:
-```ini
-# ~/.config/foot/foot.ini
-font=JetBrainsMono Nerd Font Mono:size=11
+Check the niri version:
+```bash
+niri --version
 ```
+It should be 26.04 or newer. Window and layer blur (`background-effect`) does not exist in older versions.
 
 ---
 
-## 5. NVIDIA fix
+## 3. Start DMS only in niri
 
-The NVIDIA driver keeps freed video memory instead of returning it, which makes niri use close to 1 GiB of VRAM instead of about 100 MiB. niri's documentation gives a per-process driver profile that fixes it:
+The `dms` package installs a systemd user service whose `[Install]` section says `WantedBy=graphical-session.target`. GNOME also reaches that target. If you run the usual `systemctl --user enable dms`, DMS starts inside GNOME too: a second bar appears, and DMS takes the notification service name GNOME Shell needs.
+
+Tie it to niri instead:
+```bash
+systemctl --user add-wants niri.service dms
+```
+This starts DMS whenever niri starts, and never in GNOME. Do not also add `spawn-at-startup "dms" "run"` to the niri config; DMS would run twice.
+
+For the same reason, put environment variables in the niri config (section 6), not in `~/.config/environment.d/`. Files there apply to every session, GNOME included.
+
+---
+
+## 4. NVIDIA and hybrid graphics
+
+This laptop has two GPUs: the Intel iGPU drives the built-in screen, and the RTX 5060 renders games on request (PRIME offload). niri draws the desktop on the Intel GPU by default. Leave it that way; it is the stable and battery-friendly setup.
+
+### VRAM fix
+The NVIDIA driver keeps freed video memory instead of returning it, which makes niri use close to 1 GiB of VRAM instead of about 100 MiB. This matters whenever the NVIDIA GPU is involved, for example with an external monitor on a port wired to it. niri's documentation gives this per-process driver profile:
 ```bash
 sudo mkdir -p /etc/nvidia/nvidia-application-profiles-rc.d
 sudo tee /etc/nvidia/nvidia-application-profiles-rc.d/50-limit-free-buffer-pool-in-wayland-compositors.json >/dev/null <<'EOF'
@@ -156,104 +125,98 @@ sudo tee /etc/nvidia/nvidia-application-profiles-rc.d/50-limit-free-buffer-pool-
 }
 EOF
 ```
-The kernel line from the main README already has `nvidia-drm.modeset=1`, which niri also requires.
+The kernel line from the main README already has `nvidia-drm.modeset=1`, which niri also needs.
+
+### Running games on the NVIDIA GPU
+Same as in GNOME. For one command:
+```fish
+__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia <command>
+```
+In Steam, put this in a game's *Launch Options*:
+```
+__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia %command%
+```
 
 ---
 
-## 6. Apply the dotfiles
+## 5. Generate the config
 
+Do this before logging in to niri for the first time, from a terminal in GNOME:
 ```bash
-cd ~/src
-git clone --depth=1 https://github.com/pankajsagvekar/dotfiles.git niri-dotfiles
-cd niri-dotfiles
-
-mkdir -p ~/.config/niri ~/.config/noctalia ~/Pictures/Wallpapers
-cp niri/config.kdl niri/noctalia.kdl ~/.config/niri/
-cp noctalia/config.toml noctalia/settings.toml ~/.config/noctalia/
-cp -n wallpapers/* ~/Pictures/Wallpapers/
+dms setup headless --compositor niri --terminal kitty --skip-existing
 ```
-- `cp -n` skips files that already exist, so your own wallpapers stay. `~/Pictures/Wallpapers` is also the folder HyprQuickPaper uses in GNOME, so both sessions share one wallpaper collection.
-- `niri/noctalia.kdl` holds focus-ring colours. Noctalia regenerates it from the wallpaper, so do not edit it by hand.
+- `headless` skips the interactive questions.
+- `--terminal kitty` deploys a kitty config and makes Mod+T open kitty.
+- `--skip-existing` leaves any config you already have untouched.
 
-Do not log in yet. The configs were written for another laptop; make the changes in the next section first.
+It writes:
+
+| File | Who edits it |
+|---|---|
+| `~/.config/niri/config.kdl` | You. Input, environment, animations, window rules. Ends with `include` lines for the files below. |
+| `~/.config/niri/dms/binds.kdl` | You, or DMS Settings > Input > Keyboard shortcuts. Key bindings. |
+| `~/.config/niri/dms/layout.kdl`, `colors.kdl` | DMS only. Marked "DO NOT EDIT"; DMS rewrites them from the **Niri** page in Settings and from the wallpaper colours. |
+| `~/.config/niri/dms/outputs.kdl`, `cursor.kdl`, `input.kdl`, `alttab.kdl` | DMS Settings (Displays, Cursor, and so on). |
+
+Changes you make by hand in the "DO NOT EDIT" files are lost on the next theme change. Put your own layout tweaks in `config.kdl` instead.
 
 ---
 
-## 7. Changes to make before first login
+## 6. Edit before first login
 
-### `~/.config/niri/config.kdl`
-
-**Screen.** The `output "eDP-1"` block sets 1920x1200, the author's panel. This laptop is 2560x1600. Change it to:
-```kdl
-output "eDP-1" {
-    mode "2560x1600"
-    scale 1.5
-}
-```
-`scale 1.5` gives the same apparent size as 1707x1067; use `1.25` for more space. After first login, `niri msg outputs` lists the exact modes and refresh rates.
-
-**Polkit lines.** Delete both `spawn-at-startup` lines for `polkit-gnome` and `polkit-mate`. Noctalia's settings have `polkit_agent = true`, so a third agent would only compete for the same password prompts.
-
-**Environment block.** Change these lines:
+### Environment
+Open `~/.config/niri/config.kdl` and extend the `environment` block:
 ```kdl
 environment {
-    // ...keep the other lines...
-    GDK_BACKEND "wayland,x11"      // was "wayland": falls back to X11 for apps without Wayland support
-    SDL_VIDEODRIVER "wayland,x11"  // was "wayland": Minecraft needed SDL_VIDEODRIVER=x11 on this machine
-    QT_QPA_PLATFORM "wayland;xcb"  // was "xcb": native Wayland stays sharp at scale 1.5
-}
-```
-Remove `QT_STYLE_OVERRIDE "Fusion"` if you want qt6ct to control the Qt style; the two settings override each other. `XDG_SESSION_TYPE` and `XDG_CURRENT_DESKTOP` are already set by `niri-session` and can stay or go.
-
-Also update the startup line that repeats `QT_QPA_PLATFORM=xcb`:
-```kdl
-spawn-at-startup "bash" "-c" "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP=niri QT_ENABLE_HIGHDPI_SCALING=1"
-```
-
-**Cursor.** `xcursor-theme "Fluent-dark-cursors"` is not installed here. Use the cursor from the macOS setup (`ls ~/.local/share/icons` shows its name), so both sessions match:
-```kdl
-cursor {
-    xcursor-theme "<your cursor theme>"
-    xcursor-size 24
-    hide-when-typing
+    XDG_CURRENT_DESKTOP "niri"
+    QT_QPA_PLATFORM "wayland;xcb"         // native Wayland, X11 as fallback
+    QT_QPA_PLATFORMTHEME "gtk3"           // Qt apps follow the GTK colours DMS generates
+    QT_QPA_PLATFORMTHEME_QT6 "gtk3"
+    ELECTRON_OZONE_PLATFORM_HINT "auto"   // Chrome, VS Code, Discord run natively on Wayland
+    SDL_VIDEODRIVER "wayland,x11"         // Minecraft needed SDL_VIDEODRIVER=x11 on this machine; this falls back to it
 }
 ```
 
-**Browser.** `Mod+B` starts `firefox-esr`. Change it to `"google-chrome"` if that is your main browser.
+### Super+W for the wallpaper picker
+DMS binds the wallpaper browser to Mod+Y and uses Mod+W for tabbed columns. To match the GNOME setup, where Super+W opens the wallpaper carousel, swap them in `~/.config/niri/dms/binds.kdl`:
+```kdl
+// was: Mod+W { toggle-column-tabbed-display; }
+Mod+Alt+W { toggle-column-tabbed-display; }
 
-### `~/.config/noctalia/settings.toml`
-
-**Stop Noctalia from rewriting GNOME's app theme.** This line makes Noctalia generate GTK and Qt colours from the wallpaper:
-```toml
-builtin_ids = [ "gtk3", "gtk4", "niri", "qt" ]
+// was: Mod+Y hotkey-overlay-title="Browse Wallpapers" { ... }
+Mod+W hotkey-overlay-title="Browse Wallpapers" {
+    spawn "dms" "ipc" "call" "dash" "toggle" "wallpaper";
+}
 ```
-The GTK files it writes are the same `~/.config/gtk-3.0` and `~/.config/gtk-4.0` files that hold the Tahoe/WhiteSur `@import` lines from the GNOME setup. Change it to:
-```toml
-builtin_ids = [ "niri" ]
+Each key may appear only once across all included files; a duplicate makes the config invalid.
+
+### Wallpapers
+DMS reads wallpapers from a folder you choose in Settings. Use the same folder as HyprQuickPaper in GNOME, so both sessions share one collection:
+```bash
+mkdir -p ~/Pictures/Wallpapers
 ```
-Apps then keep the macOS look in both sessions, and niri's focus ring still follows the wallpaper. If you would rather have Material You colours everywhere, keep `gtk4` and back up `~/.config/gtk-4.0` first.
-
-**Telemetry.** `telemetry_enabled = true` is the author's choice. Set it to `false` if you do not want usage data sent.
-
-**Plugins.** `auto_update = "all"` updates plugins from the official and community git repos on its own. Community plugins are third-party code. Turn automatic updates off in Noctalia's settings window (Mod+P), or remove `dotnetrob/cat` and `thepunkoff/pomodoro` from `enabled` if you do not want them.
-
-**Screen-specific values.** `[wallpaper.monitors.eDP-1]` and the `ui_scale` / `scale` values were tuned for a 1920x1200 screen. Adjust them in Noctalia's settings window (Mod+P) after logging in.
 
 ### Check the config
 ```bash
 niri validate
 ```
-It reports the line and reason for any mistake. Fix those before logging in; a broken config falls back to niri's defaults with an error banner.
+It reports the file, line, and reason for any error. A config that fails to load leaves niri on its built-in defaults with an error banner, so fix errors before logging in.
 
 ---
 
-## 8. First login
+## 7. First login
 
 1. Log out of GNOME.
 2. On the GDM screen, click your name, then the gear icon in the bottom-right corner.
 3. Pick **Niri** and log in.
 
-GDM remembers the last session. To go back to GNOME, pick **GNOME** from the same gear menu.
+The DMS bar should appear within a few seconds. GDM remembers the last session; pick **GNOME** from the same menu to go back.
+
+Two checks after the first login:
+```bash
+systemctl --user status dms     # should be "active (running)"
+dms doctor                      # lists missing optional features and config problems
+```
 
 To use the same default apps as GNOME (which program opens PDFs, links, and so on), link GNOME's list:
 ```bash
@@ -262,37 +225,106 @@ ln -s /usr/share/applications/gnome-mimeapps.list ~/.local/share/applications/ni
 
 ---
 
+## 8. Ricing with DMS
+
+Open Settings with **Mod+Comma**. Everything below is set there unless a command is shown.
+
+### Wallpaper and slideshow
+- **Mod+W** (after section 6) opens the wallpaper browser. Picking one applies it and recolours the whole desktop.
+- **Wallpaper & colors > Automatic cycling** turns on a slideshow: pick the folder (`~/Pictures/Wallpapers`), the interval, and whether the order is random.
+- From a terminal or a key binding: `dms ipc call wallpaper next` and `dms ipc call wallpaper prev`.
+
+### Colours from the wallpaper
+DMS runs matugen on every wallpaper change and builds a Material You palette from it. That palette goes to the bar, panels, niri's focus ring, kitty, and (if you allow it) GTK and Qt apps.
+- **Wallpaper & colors > Theme & colors > Source color** decides which part of the wallpaper seeds the palette. *Colorful* favours a vivid accent over a large dull area; *Dominant* (the default) takes the most common colour.
+- Light and dark mode switch the palette between its light and dark variants.
+
+### Blur and transparency
+niri 26.04 can blur what sits behind DMS surfaces.
+1. **Interface style > Background blur**: on. If it says your compositor does not support it, niri is older than 26.04.
+2. **Surface opacity** on the same page: lower it until the blur shows. Blur only shows through transparent pixels; at full opacity nothing changes.
+3. **Blur border** colour and opacity: a thin outline that smooths the edge where blur meets rounded corners.
+
+For blur behind ordinary windows, add a rule to `config.kdl`. The window needs some transparency for it to show:
+```kdl
+window-rule {
+    match app-id="^kitty$"
+    opacity 0.9
+    background-effect {
+        blur true
+    }
+}
+```
+
+### Gaps, corners, borders
+The **Niri** page in Settings sets gaps, window corner radius, and border width. DMS writes them to `dms/layout.kdl`.
+
+### Animations
+niri supports custom GLSL shaders for opening and closing windows. The `window-open` / `window-close` blocks with an expanding circle in [pankajsagvekar/dotfiles](https://github.com/pankajsagvekar/dotfiles/blob/main/niri/config.kdl) are a good starting point. Paste them into the `animations` block of `config.kdl`, replacing the existing `window-open` and `window-close` entries, then run `niri validate`.
+
+### GTK and Qt apps: decide once
+DMS always generates `dank-colors.css` in `~/.config/gtk-3.0` and `~/.config/gtk-4.0`. The **Apply GTK colors** switch under **Wallpaper & colors > App theming** decides whether apps actually use it.
+
+| | Apply GTK colors **off** | Apply GTK colors **on** |
+|---|---|---|
+| Apps in niri | Keep the current GTK theme (Tahoe/WhiteSur) | Follow the wallpaper colours |
+| Apps in GNOME | Unchanged | Also follow the wallpaper colours, because the folders are shared |
+| Desktop consistency in niri | Bar and apps use different palettes | Everything matches |
+
+For a full rice, turn it on. Back up the current files first, so the GNOME look can be restored:
+```bash
+cp -r ~/.config/gtk-3.0 ~/.config/gtk-3.0.before-dms
+cp -r ~/.config/gtk-4.0 ~/.config/gtk-4.0.before-dms
+apt policy adw-gtk3
+```
+If `adw-gtk3` is available, install it first. With it, DMS patches a copy of the theme and GTK3 apps switch between light and dark live; without it, DMS falls back to a plain CSS import.
+
+### Terminal
+The kitty config from section 5 already uses the wallpaper palette. Set the font so Starship's icons render, in `~/.config/kitty/kitty.conf`:
+```
+font_family JetBrainsMono Nerd Font Mono
+font_size   11
+```
+fish, Starship, and fastfetch work unchanged; they do not depend on the desktop.
+
+### Bar and widgets
+The **Bar** pages (General, Appearance, Bar widgets) control position, look, widgets, and their order. Media controls, weather, system stats (from `dgop`), and an audio visualiser (from `cava`) are already installed.
+
+### Lock screen and idle
+**Power & battery > Power & sleep** sets auto-lock and suspend timers, with separate values on battery and on AC. **Security > Lock screen** sets what the lock screen shows.
+
+---
+
 ## 9. Key bindings
 
-`Mod` is the Super (Windows) key. `Mod+Shift+/` shows the full list on screen.
+`Mod` is the Super (Windows) key. **Mod+Shift+/** shows the full list on screen, read from your actual config.
 
 | Keys | Action |
 |---|---|
-| Mod+Return | Terminal (foot) |
-| Mod+D | App launcher |
-| Mod+B / Mod+M | Browser / file manager |
+| Mod+T | Terminal (kitty) |
+| Mod+Space | App launcher |
+| Alt+Space | Spotlight bar (search apps, files, calculator) |
 | Mod+Q | Close window |
-| Mod+H / Mod+L (or arrows) | Focus column left / right |
-| Mod+J / Mod+K | Focus window down / up within a column |
+| Mod+H / Mod+L (or Left / Right) | Focus column left / right |
+| Mod+J / Mod+K (or Down / Up) | Focus window down / up in a column |
 | Mod+Shift + H/J/K/L | Move window |
-| Mod+R | Cycle column width (25 / 50 / 75 / 100 %) |
-| Mod+F | Fullscreen |
-| Mod+T | Toggle floating |
-| Mod+1 to Mod+0 | Switch workspace |
-| Mod+Shift+1 to Mod+Shift+0 | Move window to workspace |
-| **Mod+W** | **Wallpaper picker** (Noctalia; same key as HyprQuickPaper in GNOME) |
-| Mod+Shift+W | Next wallpaper |
+| Mod+F | Maximize column |
+| Mod+Shift+F | Fullscreen |
+| Mod+Shift+T | Toggle floating |
+| Mod+Alt+W | Tabbed column (moved from Mod+W in section 6) |
+| Mod+O or Mod+Tab | Overview of all workspaces |
+| Mod+1 to Mod+9 | Switch workspace |
+| Mod+U / Mod+I | Workspace down / up |
+| **Mod+W** | **Wallpaper browser** (moved from Mod+Y in section 6) |
 | Mod+V | Clipboard history |
-| Mod+N | Notifications |
-| Mod+E | Control center (Wi-Fi, Bluetooth, volume) |
-| Mod+P | Noctalia settings |
-| Mod+S / Print | Screenshot region / full screen |
-| Mod+Escape | Power menu |
-| Mod+Shift+T | Lock screen |
-| Mod+Shift+C | Reload niri config |
-| Mod+Ctrl+Q | Quit niri (back to GDM) |
-
-Changing the wallpaper with Mod+W also recolours Noctalia and niri's focus ring, because the theme source is `wallpaper`.
+| Mod+N | Notification center |
+| Mod+Shift+N | Notepad |
+| Mod+M or Ctrl+Alt+Delete | Task manager |
+| Mod+Comma | DMS Settings |
+| Mod+Shift+W | Create a window rule for the focused window |
+| Super+X | Power menu |
+| Mod+Alt+L | Lock screen |
+| Mod+Shift+E | Quit niri (back to GDM) |
 
 ---
 
@@ -300,39 +332,49 @@ Changing the wallpaper with Mod+W also recolours Noctalia and niri's focus ring,
 
 | Problem | Check |
 |---|---|
-| Black screen or instant return to GDM | Log in to GNOME, run `journalctl --user -b -u niri` and read the last errors. Usually a config error; run `niri validate`. |
-| No bar or launcher | Noctalia did not start. Open a terminal (Mod+Return) and run `noctalia` to see its error output. |
+| DMS bar shows up in GNOME too | It was enabled globally. `systemctl --user disable dms`, then `systemctl --user add-wants niri.service dms` again. |
+| No bar in niri | `systemctl --user status dms` and `journalctl --user -u dms -b`. Run `dms doctor`. |
+| Black screen or instant return to GDM | Log in to GNOME and run `journalctl --user -b -u niri`. Usually a config error; run `niri validate`. |
+| "Duplicate bind" error | The same key is defined in `config.kdl` and `dms/binds.kdl`. Keep one. |
 | X11 app does not open | `which xwayland-satellite` must print a path. `journalctl --user -b -u niri | grep X11` should show `listening on X11 socket`. |
-| Screen sharing in Chrome or Discord fails | Both portals from section 4 must be installed. Log out and in after installing them. |
-| High VRAM, stutter | Section 5 profile missing. `nvtop` should show niri near 100 MiB. |
-| Apps look different from GNOME | `builtin_ids` still includes `gtk3` / `gtk4`. Fix it as in section 7 and restore `~/.config/gtk-4.0`. |
+| Screen sharing in Chrome or Discord fails | Both portals from section 2 must be installed. Log out and in after installing them. |
+| High VRAM, stutter with an external monitor | Section 4 profile missing. `nvtop` should show niri near 100 MiB. |
+| Blur toggle does nothing | `niri --version` below 26.04, or Surface Opacity still at 100%. |
+| GNOME apps changed colour | Apply GTK colors is on (section 8). Turn it off and copy the `.before-dms` folders back. |
 | Speakers silent | Same kernel and PipeWire as GNOME, so the fixes from that session apply. `pavucontrol` works in niri too. |
 
 ---
 
-## 11. Removing niri
+## 11. Removing niri and DMS
 
 ```bash
-sudo apt purge niri noctalia
-sudo rm /usr/local/bin/xwayland-satellite
-sudo rm /etc/apt/sources.list.d/noctalia.sources
-rm -r ~/.config/niri ~/.config/noctalia
+systemctl --user remove-wants niri.service dms 2>/dev/null
+sudo apt purge dms niri quickshell matugen dgop danksearch
+sudo rm /etc/apt/sources.list.d/danklinux.list /etc/apt/sources.list.d/avengemedia-dms.list
+sudo rm /etc/apt/keyrings/danklinux.gpg /etc/apt/keyrings/avengemedia-dms.gpg
+sudo apt update
+rm -r ~/.config/niri ~/.config/DankMaterialShell
 rm ~/.local/share/applications/niri-mimeapps.list
 ```
-GNOME is untouched. If Noctalia had already written GTK colours, restore the `@import` lines in `~/.config/gtk-4.0/gtk.css` and `gtk-dark.css` from the main README.
+GNOME stays as it was, except for the GTK folders if Apply GTK colors was on. Restore them with:
+```bash
+rm -r ~/.config/gtk-3.0 ~/.config/gtk-4.0
+mv ~/.config/gtk-3.0.before-dms ~/.config/gtk-3.0
+mv ~/.config/gtk-4.0.before-dms ~/.config/gtk-4.0
+```
 
 ---
 
 ## 12. How long this stays accurate
 
-Written in October 2026, against niri 26.04 (released April 2026) and Noctalia v5.
+Written in October 2026, against niri 26.04 and the DMS docs for version 1.6.
 
 | Part | Stays usable | What ends it |
 |---|---|---|
-| GDM session switching, portals, NVIDIA profile | Several years | These are stable system interfaces |
-| Building niri with `cargo deb` | Until Debian ships its own `niri` package | Then switch to `apt install niri` |
-| niri `config.kdl` | 1 to 2 years | niri has so far kept old config options working across releases; new releases mostly add options |
-| Noctalia install and `settings.toml` | Months | v5 is young; the `config_version` field already reads 14, so settings get migrated often. Recheck after each Noctalia update |
-| Community plugins | Weeks to months | Plugin authors updating independently of Noctalia |
+| GDM session switching, portals, NVIDIA profile, `add-wants` | Several years | These are stable system interfaces |
+| DankLinux repositories for Debian Testing | As long as DankLinux publishes them | If Debian packages niri and DMS itself, switch to those |
+| `config.kdl` (environment, rules, animations) | 1 to 2 years | niri has so far kept old config options working; new releases mostly add options |
+| DMS Settings layout and menu names | Months | DMS releases often; menu names in section 8 may move. `dms doctor` and the docs at danklinux.com/docs follow the current version |
+| `dms/binds.kdl` defaults | Months | New DMS versions may change default keys; `dms setup` never overwrites an existing file, so your edits stay |
 
-niri has shipped a release roughly every three to five months. Before upgrading, read its release notes for config changes, then run `niri validate`.
+Before a big upgrade, back up `~/.config/niri` and `~/.config/DankMaterialShell`. After it, run `niri validate` and `dms doctor`.
